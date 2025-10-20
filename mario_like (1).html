@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mario‑like Platformer (Original Assets)</title>
+  <style>
+    html, body { height:100%; margin:0; background:#0e0f14; color:#eaeaea; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
+    .wrap { display:grid; place-items:center; height:100%; gap:10px; }
+    #game { outline:0; }
+    .hud { text-align:center; opacity:.9 }
+    .btn { border:1px solid #444; padding:.4rem .8rem; border-radius:10px; cursor:pointer; display:inline-block; }
+    .btn:hover{ background:#1b1f2a }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.0/dist/phaser.min.js"></script>
+</head>
+<body>
+<div class="wrap">
+  <div id="game"></div>
+  <div class="hud">
+    <div>←/→ 이동 • SPACE 점프 • S 달리기 • 아래에서 블록을 치면 코인/버섯! • R 재시작</div>
+  </div>
+</div>
+
+<script>
+const W = 960;
+const H = 540;
+
+const config = {
+  type: Phaser.AUTO,
+  parent: "game",
+  width: W,
+  height: H,
+  backgroundColor: "#0e0f14",
+  physics: {
+    default: "arcade",
+    arcade: {
+      gravity: { y: 1200 },
+      debug: false,
+    },
+  },
+  scene: [Boot, Play, GameOver, Win],
+};
+
+let game;
+window.addEventListener("load", ()=> game = new Phaser.Game(config));
+
+// ---------- Boot: generate simple textures (no external assets) ----------
+function Boot(){ Phaser.Scene.call(this, "Boot"); }
+Boot.prototype = Object.create(Phaser.Scene.prototype);
+Boot.prototype.constructor = Boot;
+Boot.prototype.preload = function() {
+  // ground tile
+  let g = this.add.graphics();
+  g.fillStyle(0x3a3947,1).fillRoundedRect(0,0,64,24,4).lineStyle(2,0x2a2a36,1).strokeRoundedRect(0,0,64,24,4);
+  g.generateTexture("tile_ground",64,24); g.destroy();
+
+  // brick
+  g = this.add.graphics();
+  g.fillStyle(0xb45f3c,1).fillRoundedRect(0,0,32,32,3);
+  g.lineStyle(2,0x6e3017,1).strokeRoundedRect(0,0,32,32,3);
+  g.lineBetween(0,16,32,16).lineBetween(16,0,16,16).lineBetween(8,16,8,32).lineBetween(24,16,24,32);
+  g.generateTexture("brick",32,32); g.destroy();
+
+  // question block
+  g = this.add.graphics();
+  g.fillStyle(0xdeb140,1).fillRoundedRect(0,0,32,32,3);
+  g.lineStyle(2,0x8e6f25,1).strokeRoundedRect(0,0,32,32,3);
+  g.fillStyle(0xffffff,1);
+  g.fillCircle(16,11,3); g.fillRect(14,13,4,7); g.fillRect(14,22,4,3);
+  g.generateTexture("qblock",32,32); g.destroy();
+
+  // used block
+  g = this.add.graphics();
+  g.fillStyle(0x8a7e45,1).fillRoundedRect(0,0,32,32,3);
+  g.lineStyle(2,0x5f5430,1).strokeRoundedRect(0,0,32,32,3);
+  g.generateTexture("used",32,32); g.destroy();
+
+  // coin
+  g = this.add.graphics();
+  g.fillStyle(0xffd166,1).fillCircle(10,10,10);
+  g.lineStyle(2,0xe0b84f,1).strokeCircle(10,10,10);
+  g.generateTexture("coin",20,20); g.destroy();
+
+  // mushroom (power-up)
+  g = this.add.graphics();
+  g.fillStyle(0xff6b6b,1).fillCircle(10,8,10);
+  g.fillStyle(0xffffff,1).fillCircle(6,8,3).fillCircle(14,8,3).fillRect(6,10,8,6);
+  g.generateTexture("mushroom",20,16); g.destroy();
+
+  // enemy (goomba-like)
+  g = this.add.graphics();
+  g.fillStyle(0x9b6e4a,1).fillRoundedRect(0,0,26,22,6);
+  g.fillStyle(0x000000,1).fillCircle(9,12,2).fillCircle(17,12,2);
+  g.generateTexture("goomba",26,22); g.destroy();
+
+  // player small
+  g = this.add.graphics();
+  g.fillStyle(0x7bd389,1).fillRoundedRect(0,0,18,26,6);
+  g.generateTexture("p_small",18,26); g.destroy();
+  // player big
+  g = this.add.graphics();
+  g.fillStyle(0x7bd389,1).fillRoundedRect(0,0,18,38,6);
+  g.generateTexture("p_big",18,38); g.destroy();
+
+  // background tiles for parallax
+  const makeBG = (name, c1, c2, split) => {
+    const b = this.add.graphics();
+    b.fillStyle(c1,1).fillRect(0,0,64,64);
+    b.fillStyle(c2,1).fillRect(0,split,64,64-split);
+    b.generateTexture(name,64,64); b.destroy();
+  };
+  makeBG("bg_far", 0x101421, 0x121a2b, 16);
+  makeBG("bg_mid", 0x13182a, 0x182138, 24);
+  makeBG("bg_near", 0x182138, 0x213053, 32);
+
+  this.load.on("complete", ()=> this.scene.start("Play"));
+};
+
+// --------- Play Scene ---------
+function Play(){ Phaser.Scene.call(this, "Play"); }
+Play.prototype = Object.create(Phaser.Scene.prototype);
+Play.prototype.constructor = Play;
+
+Play.prototype.init = function(){
+  this.score = 0;
+  this.coins = 0;
+  this.big = false;
+};
+
+Play.prototype.create = function(){
+  const worldW = 3600;
+  this.physics.world.setBounds(0,0,worldW,H);
+
+  // parallax bg
+  this.bgFar  = this.add.tileSprite(0,0,worldW,H,"bg_far").setOrigin(0);
+  this.bgMid  = this.add.tileSprite(0,0,worldW,H,"bg_mid").setOrigin(0).setAlpha(0.9);
+  this.bgNear = this.add.tileSprite(0,0,worldW,H,"bg_near").setOrigin(0).setAlpha(0.85);
+
+  // ground
+  this.ground = this.physics.add.staticGroup();
+  for(let x=0;x<worldW;x+=128){
+    const t = this.ground.create(x, H-16, "tile_ground").setOrigin(0,1);
+    t.refreshBody();
+  }
+
+  // platforms
+  this.platforms = this.physics.add.staticGroup();
+  const plats = [
+    {x:220,y:H-120,w:3}, {x:520,y:H-200,w:2}, {x:820,y:H-160,w:2},
+    {x:1160,y:H-220,w:3}, {x:1500,y:H-150,w:2}, {x:1840,y:H-210,w:3},
+    {x:2200,y:H-170,w:2}, {x:2560,y:H-230,w:3}, {x:2920,y:H-180,w:2},
+  ];
+  plats.forEach(p=>{
+    for(let i=0;i<p.w;i++){
+      const tile = this.platforms.create(p.x + i*64, p.y, "tile_ground").setOrigin(0,0.5);
+      tile.refreshBody();
+    }
+  });
+
+  // blocks (bricks & question blocks)
+  this.blocks = this.physics.add.staticGroup();
+  const blocksData = [
+    // bricks
+    {type:"brick", x:420, y:H-260}, {type:"brick", x:452, y:H-260},
+    {type:"brick", x:484, y:H-260}, {type:"brick", x:516, y:H-260},
+    // question block with coin
+    {type:"qcoin", x:600, y:H-260},
+    // question block with mushroom
+    {type:"qmush", x:820, y:H-300},
+    // small rows
+    {type:"brick", x:1200, y:H-300}, {type:"qcoin", x:1232, y:H-300}, {type:"brick", x:1264, y:H-300},
+  ];
+  blocksData.forEach(b=>{
+    const key = b.type.startsWith("q") ? "qblock" : "brick";
+    const block = this.blocks.create(b.x, b.y, key).setOrigin(0,1);
+    block.refreshBody();
+    block.blockType = b.type;
+    block.used = false;
+  });
+
+  // coins floating
+  this.coinsG = this.physics.add.group();
+  [ {x:700,y:H-260}, {x:740,y:H-280}, {x:780,y:H-300}, {x:820,y:H-320} ].forEach(c=>{
+    const coin = this.coinsG.create(c.x,c.y,"coin");
+    coin.body.setAllowGravity(false);
+  });
+
+  // enemies (goomba-like)
+  this.enemies = this.physics.add.group();
+  const epos = [ {x:680,y:H-40,vx:-50}, {x:1000,y:H-40,vx:60}, {x:1600,y:H-40,vx:-70}, {x:2100,y:H-40,vx:80} ];
+  epos.forEach(e=>{
+    const mob = this.enemies.create(e.x, e.y-12, "goomba");
+    mob.setCollideWorldBounds(false);
+    mob.setVelocityX(e.vx);
+    mob.body.setSize(24,20).setOffset(1,2);
+    mob.setBounce(1,0);
+  });
+
+  // goal flag (simple pole)
+  this.goal = this.physics.add.staticImage(worldW-80, H-120, "used").setScale(0.8,4).refreshBody();
+  this.flag = this.add.rectangle(worldW-100, H-330, 20, 14, 0xffd166);
+
+  // player
+  this.player = this.physics.add.sprite(80, H-120, "p_small");
+  this.player.body.setSize(14,24).setOffset(2,2);
+  this.player.setCollideWorldBounds(true);
+  this.cursors = this.input.keyboard.createCursorKeys();
+  this.keys = this.input.keyboard.addKeys("SPACE,S,R");
+
+  // UI
+  this.scoreText = this.add.text(16,16,"SCORE 00000",{fontSize:18,color:"#fff"}).setScrollFactor(0);
+  this.coinText = this.add.text(16,40,"COINS 0",{fontSize:16,color:"#ffd166"}).setScrollFactor(0);
+
+  // collisions
+  this.physics.add.collider(this.player, this.ground);
+  this.physics.add.collider(this.player, this.platforms);
+  this.physics.add.collider(this.enemies, this.ground);
+  this.physics.add.collider(this.enemies, this.platforms);
+  this.physics.add.collider(this.player, this.blocks, this.hitBlock, null, this);
+  this.physics.add.overlap(this.player, this.coinsG, this.takeCoin, null, this);
+  this.physics.add.overlap(this.player, this.enemies, this.playerEnemy, null, this);
+  this.physics.add.overlap(this.player, this.goal, ()=> this.scene.start("Win", { score: this.score, coins: this.coins }) );
+
+  // camera
+  this.cameras.main.setBounds(0,0,worldW,H);
+  this.cameras.main.startFollow(this.player, true, 0.12, 0.12);
+};
+
+Play.prototype.setBig = function(big){
+  this.big = big;
+  if(big){
+    this.player.setTexture("p_big");
+    this.player.body.setSize(16,36).setOffset(1,2);
+  } else {
+    this.player.setTexture("p_small");
+    this.player.body.setSize(14,24).setOffset(2,2);
+  }
+};
+
+Play.prototype.update = function(){
+  const run = this.keys.S.isDown ? 1.4 : 1.0;
+  const speed = 200 * run;
+  if(this.cursors.left.isDown){
+    this.player.setVelocityX(-speed);
+    this.player.setFlipX(true);
+  } else if (this.cursors.right.isDown){
+    this.player.setVelocityX(speed);
+    this.player.setFlipX(false);
+  } else {
+    this.player.setVelocityX(0);
+  }
+
+  // jump (single)
+  if (Phaser.Input.Keyboard.JustDown(this.keys.SPACE) && this.player.body.onFloor()){
+    this.player.setVelocityY(-480);
+  }
+
+  // parallax
+  const camX = this.cameras.main.scrollX;
+  this.bgFar.tilePositionX = camX * 0.2;
+  this.bgMid.tilePositionX = camX * 0.45;
+  this.bgNear.tilePositionX = camX * 0.7;
+
+  // fall death
+  if (this.player.y > H + 100){
+    this.scene.start("GameOver", { score: this.score });
+  }
+};
+
+// coin collect
+Play.prototype.takeCoin = function(player, coin){
+  coin.destroy();
+  this.addFloatingText(coin.x, coin.y, "+1");
+  this.coins += 1;
+  this.score += 100;
+  this.updateScore();
+};
+
+Play.prototype.updateScore = function(){
+  this.scoreText.setText("SCORE " + String(this.score).padStart(5,"0"));
+  this.coinText.setText("COINS " + this.coins);
+};
+
+// enemy interaction (stomp vs hit)
+Play.prototype.playerEnemy = function(player, enemy){
+  const vy = player.body.velocity.y;
+  const fromAbove = vy > 80 && player.y < enemy.y - 6;
+  if(fromAbove){
+    // stomp
+    enemy.disableBody(true,true);
+    player.setVelocityY(-360);
+    this.score += 200;
+    this.updateScore();
+  } else {
+    if(this.big){
+      // shrink
+      this.setBig(false);
+      player.setVelocityY(-280);
+    } else {
+      this.scene.start("GameOver", { score: this.score });
+    }
+  }
+};
+
+// hitting blocks from below
+Play.prototype.hitBlock = function(player, block){
+  // check upward hit
+  if (player.body.velocity.y < 0 && player.y > block.y){
+    // bump effect
+    const tween = this.tweens.add({ targets:block, y:block.y-6, duration:70, yoyo:true });
+    // handle brick vs question block
+    if (block.used) return;
+
+    if (block.blockType === "brick"){
+      if (this.big){
+        // break brick
+        this.addParticles(block.x+16, block.y-16, 0xb45f3c);
+        block.disableBody(true,true);
+        this.score += 50;
+        this.updateScore();
+      } else {
+        // small bump only
+      }
+    } else if (block.blockType === "qcoin"){
+      block.setTexture("used"); block.used = true;
+      this.spawnCoin(block.x+16, block.y-22);
+    } else if (block.blockType === "qmush"){
+      block.setTexture("used"); block.used = true;
+      this.spawnMushroom(block.x+16, block.y-24);
+    }
+  }
+};
+
+Play.prototype.spawnCoin = function(x,y){
+  const c = this.physics.add.image(x,y,"coin");
+  c.body.setAllowGravity(false);
+  this.tweens.add({ targets:c, y:y-40, alpha:0, duration:400, onComplete:()=> c.destroy() });
+  this.coins += 1; this.score += 200; this.updateScore();
+};
+
+Play.prototype.spawnMushroom = function(x,y){
+  const m = this.physics.add.image(x,y,"mushroom");
+  m.setVelocityX(60);
+  this.physics.add.collider(m, this.ground);
+  this.physics.add.overlap(this.player, m, ()=>{
+    m.destroy();
+    this.setBig(true);
+    this.score += 100;
+    this.updateScore();
+  });
+};
+
+Play.prototype.addParticles = function(x,y,color){
+  const parts = this.add.particles(0,0,"brick");
+  const em = parts.createEmitter({
+    x:x, y:y, speed: {min:-200,max:200}, angle:{min:0,max:360}, gravityY:800, lifespan:500, quantity:8, scale:{start:0.3,end:0}, tint: color
+  });
+  this.time.delayedCall(520, ()=> parts.destroy());
+};
+
+Play.prototype.addFloatingText = function(x,y,text){
+  const t = this.add.text(x,y,text,{fontSize:14,color:"#fff"}).setOrigin(0.5);
+  this.tweens.add({ targets:t, y:y-30, alpha:0, duration:500, onComplete:()=> t.destroy() });
+};
+
+// --------- GameOver & Win ---------
+function GameOver(){ Phaser.Scene.call(this,"GameOver"); }
+GameOver.prototype = Object.create(Phaser.Scene.prototype);
+GameOver.prototype.constructor = GameOver;
+GameOver.prototype.init = function(d){ this.score = d.score||0; };
+GameOver.prototype.create = function(){
+  const {width,height} = this.scale;
+  this.add.text(width/2, height/2-40, "GAME OVER",{fontSize:40,color:"#fff"}).setOrigin(0.5);
+  this.add.text(width/2, height/2, "Score: "+this.score,{fontSize:22,color:"#ffd166"}).setOrigin(0.5);
+  this.add.text(width/2, height/2+40, "[ENTER] 다시 시작",{fontSize:18,color:"#7bd389"}).setOrigin(0.5);
+  this.input.keyboard.once("keydown-ENTER", ()=> this.scene.start("Play"));
+};
+
+function Win(){ Phaser.Scene.call(this,"Win"); }
+Win.prototype = Object.create(Phaser.Scene.prototype);
+Win.prototype.constructor = Win;
+Win.prototype.init = function(d){ this.score = d.score||0; this.coins = d.coins||0; };
+Win.prototype.create = function(){
+  const {width,height} = this.scale;
+  this.add.text(width/2, height/2-50, "STAGE CLEAR!",{fontSize:40,color:"#fff"}).setOrigin(0.5);
+  this.add.text(width/2, height/2-10, "Score: "+this.score+"  •  Coins: "+this.coins,{fontSize:22,color:"#ffd166"}).setOrigin(0.5);
+  this.add.text(width/2, height/2+40, "[ENTER] 다시 플레이",{fontSize:18,color:"#7bd389"}).setOrigin(0.5);
+  this.input.keyboard.once("keydown-ENTER", ()=> this.scene.start("Play"));
+};
+</script>
+</body>
+</html>
